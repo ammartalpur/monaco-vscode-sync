@@ -43,21 +43,19 @@ export default function App() {
     "Connecting" | "Ready" | "Waiting for URL"
   >("Connecting");
   const [code, setCode] = useState<string>("");
-  const [fileName, setFileName] = useState<string>("Live Sync");
-  const [language, setLanguage] = useState<string>("typescript");
+
+  // Start with empty/generic states since VS Code will tell us what file this is
+  const [fileName, setFileName] = useState<string>("Waiting for VS Code...");
+  const [language, setLanguage] = useState<string>("plaintext");
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const roomId = urlParams.get("room");
-    const file = urlParams.get("file");
 
-    if (!roomId || !file) {
+    if (!roomId) {
       setStatus("Waiting for URL");
       return;
     }
-
-    setFileName(file);
-    setLanguage(getLanguageFromExtension(file));
 
     const room = supabase.channel(roomId, {
       config: { broadcast: { self: false } },
@@ -66,6 +64,12 @@ export default function App() {
     room.on("broadcast", { event: "code-update" }, (payload) => {
       isApplyingRemoteChange.current = true;
       setCode(payload.payload.newCode);
+
+      // UPDATE THE UI IF A NEW FILE IS OPENED IN VS CODE
+      if (payload.payload.fileName) {
+        setFileName(payload.payload.fileName);
+        setLanguage(getLanguageFromExtension(payload.payload.fileName));
+      }
     });
 
     room.on("broadcast", { event: "cursor-update" }, (payload) => {
@@ -86,18 +90,12 @@ export default function App() {
       }
     });
 
-     room.subscribe((status) => {
-       if (status === "SUBSCRIBED") {
-         setStatus("Ready");
-         room.send({
-           type: "broadcast",
-           event: "request-sync",
-           payload: {},
-         });
-       }
-     });
-
-  
+    room.subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        setStatus("Ready");
+        room.send({ type: "broadcast", event: "request-sync", payload: {} });
+      }
+    });
 
     channelRef.current = room;
 
@@ -114,7 +112,6 @@ export default function App() {
 
   const handleEditorChange = (value: string | undefined) => {
     if (value === undefined) return;
-
     if (isApplyingRemoteChange.current) {
       isApplyingRemoteChange.current = false;
       return;

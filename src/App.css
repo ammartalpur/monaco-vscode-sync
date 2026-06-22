@@ -1,0 +1,9 @@
+/* Reset default browser styles that cause layout shifts and unwanted scrollbars */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* Disables unwanted page-level scrolling entirely */
+  background-color: #1e1e1e;
+}

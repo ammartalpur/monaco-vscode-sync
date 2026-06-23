@@ -62,18 +62,27 @@ export default function App() {
     });
 
     room.on("broadcast", { event: "code-update" }, (payload) => {
-      isApplyingRemoteChange.current = true;
-      setCode(payload.payload.newCode);
+      const incomingFileName = payload.payload.fileName;
 
-      if (payload.payload.fileName) {
-        fileNameRef.current = payload.payload.fileName;
-        setFileName(payload.payload.fileName);
-        setLanguage(getLanguageFromExtension(payload.payload.fileName));
+      // 1. FIX: INDEPENDENT VIEWING
+      // Only apply the code if it's the file we are currently looking at,
+      // OR if we haven't loaded our very first file yet.
+      if (
+        fileNameRef.current === "Waiting for VS Code..." ||
+        fileNameRef.current === incomingFileName
+      ) {
+        isApplyingRemoteChange.current = true;
+        setCode(payload.payload.newCode);
+
+        if (incomingFileName) {
+          fileNameRef.current = incomingFileName;
+          setFileName(incomingFileName);
+          setLanguage(getLanguageFromExtension(incomingFileName));
+        }
       }
     });
 
     room.on("broadcast", { event: "file-tree-update" }, (payload) => {
-      console.log("🐛 [WEB] Received files:", payload.payload.files);
       setFileTree(payload.payload.files || []);
     });
 
@@ -138,6 +147,14 @@ export default function App() {
 
   const requestFileOpen = (path: string) => {
     if (channelRef.current) {
+      // 2. FIX: UPDATE TARGET FILE
+      // Before we ask VS Code for the file, we update our internal reference.
+      // This ensures the listener above doesn't ignore the file when VS Code sends it!
+      const newTargetFile = path.split("/").pop() || path;
+      fileNameRef.current = newTargetFile;
+      setFileName(newTargetFile);
+      setCode("// Loading file from VS Code..."); // Optional visual feedback
+
       channelRef.current.send({
         type: "broadcast",
         event: "open-file",
@@ -146,10 +163,8 @@ export default function App() {
     }
   };
 
-  // NEW: Manual trigger function
   const handleRefreshTree = () => {
     if (channelRef.current) {
-      console.log("🐛 [WEB] Manually requesting file tree...");
       channelRef.current.send({
         type: "broadcast",
         event: "request-file-tree",
@@ -202,7 +217,6 @@ export default function App() {
       <div
         style={{ flex: 1, display: "flex", width: "100%", overflow: "hidden" }}
       >
-        {/* Sidebar */}
         <div
           style={{
             width: "250px",
@@ -231,7 +245,6 @@ export default function App() {
             >
               Explorer
             </span>
-            {/* NEW: Refresh Button */}
             <button
               onClick={handleRefreshTree}
               style={{
@@ -258,7 +271,7 @@ export default function App() {
                   fontStyle: "italic",
                 }}
               >
-                No files found or waiting...
+                No files found...
               </li>
             ) : (
               fileTree.map((path, index) => {
@@ -293,7 +306,6 @@ export default function App() {
           </ul>
         </div>
 
-        {/* Editor */}
         <div style={{ flex: 1, position: "relative" }}>
           <Editor
             height="100%"

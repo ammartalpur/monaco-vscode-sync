@@ -65,7 +65,11 @@ export default function App() {
 
     // NEW: Listen for the file tree list coming from VS Code
     room.on("broadcast", { event: "file-tree-update" }, (payload) => {
-        setFileTree(payload.payload.files || []);
+      console.log(
+        "🐛 [WEB] Received 'file-tree-update':",
+        payload.payload.files,
+      );
+      setFileTree(payload.payload.files || []);
     });
 
     room.on("broadcast", { event: "cursor-update" }, (payload) => {
@@ -81,14 +85,21 @@ export default function App() {
       }
     });
 
-    room.subscribe((status) => {
-      if (status === "SUBSCRIBED") {
-        setStatus("Ready");
-        // Ask VS Code for the code AND the file tree immediately
-        room.send({ type: "broadcast", event: "request-sync", payload: {} });
-        room.send({ type: "broadcast", event: "request-file-tree", payload: {} });
-      }
-    });
+   room.subscribe((status) => {
+     console.log("🐛 [WEB] Supabase Connection Status:", status);
+
+     if (status === "SUBSCRIBED") {
+       setStatus("Ready");
+
+       console.log("🐛 [WEB] Connected! Asking VS Code for the file tree...");
+       room.send({ type: "broadcast", event: "request-sync", payload: {} });
+       room.send({
+         type: "broadcast",
+         event: "request-file-tree",
+         payload: {},
+       });
+     }
+   });
 
     channelRef.current = room;
 

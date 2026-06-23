@@ -45,8 +45,10 @@ export default function App() {
   const [code, setCode] = useState<string>("");
   const [fileName, setFileName] = useState<string>("Waiting for VS Code...");
   const [language, setLanguage] = useState<string>("plaintext");
-
   const [fileTree, setFileTree] = useState<string[]>([]);
+
+  // NEW: State to track if the sidebar is open or closed
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -64,9 +66,6 @@ export default function App() {
     room.on("broadcast", { event: "code-update" }, (payload) => {
       const incomingFileName = payload.payload.fileName;
 
-      // 1. FIX: INDEPENDENT VIEWING
-      // Only apply the code if it's the file we are currently looking at,
-      // OR if we haven't loaded our very first file yet.
       if (
         fileNameRef.current === "Waiting for VS Code..." ||
         fileNameRef.current === incomingFileName
@@ -147,13 +146,10 @@ export default function App() {
 
   const requestFileOpen = (path: string) => {
     if (channelRef.current) {
-      // 2. FIX: UPDATE TARGET FILE
-      // Before we ask VS Code for the file, we update our internal reference.
-      // This ensures the listener above doesn't ignore the file when VS Code sends it!
       const newTargetFile = path.split("/").pop() || path;
       fileNameRef.current = newTargetFile;
       setFileName(newTargetFile);
-      setCode("// Loading file from VS Code..."); // Optional visual feedback
+      setCode("// Loading file from VS Code...");
 
       channelRef.current.send({
         type: "broadcast",
@@ -197,9 +193,29 @@ export default function App() {
           height: "50px",
         }}
       >
-        <span style={{ fontWeight: 600, letterSpacing: "0.5px" }}>
-          Tameer Workspace / {fileName}
-        </span>
+        {/* NEW: Left side wrapper for the toggle button and title */}
+        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#cccccc",
+              cursor: "pointer",
+              fontSize: "18px",
+              padding: 0,
+              display: "flex",
+              alignItems: "center",
+            }}
+            title="Toggle Sidebar"
+          >
+            ☰
+          </button>
+          <span style={{ fontWeight: 600, letterSpacing: "0.5px" }}>
+            Tameer Workspace / {fileName}
+          </span>
+        </div>
+
         <span
           style={{
             fontSize: "12px",
@@ -217,13 +233,17 @@ export default function App() {
       <div
         style={{ flex: 1, display: "flex", width: "100%", overflow: "hidden" }}
       >
+        {/* UPDATED: Sidebar with dynamic width and transitions */}
         <div
           style={{
-            width: "250px",
+            width: isSidebarOpen ? "250px" : "0px",
+            opacity: isSidebarOpen ? 1 : 0,
             backgroundColor: "#252526",
-            borderRight: "1px solid #3c3c3c",
+            borderRight: isSidebarOpen ? "1px solid #3c3c3c" : "none",
             overflowY: "auto",
-            padding: "10px 0",
+            padding: isSidebarOpen ? "10px 0" : "10px 0",
+            transition: "width 0.3s ease, opacity 0.2s ease",
+            whiteSpace: "nowrap", // Prevents text wrapping weirdly while closing
           }}
         >
           <div
@@ -287,7 +307,8 @@ export default function App() {
                       color: isSelected ? "#ffffff" : "#cccccc",
                       backgroundColor: isSelected ? "#37373d" : "transparent",
                       cursor: "pointer",
-                      wordBreak: "break-all",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
                     }}
                     onMouseEnter={(e) => {
                       if (!isSelected)

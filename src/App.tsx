@@ -47,7 +47,6 @@ export default function App() {
   const [language, setLanguage] = useState<string>("plaintext");
   const [fileTree, setFileTree] = useState<string[]>([]);
 
-  // NEW: State to track if the sidebar is open or closed
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
 
   useEffect(() => {
@@ -191,12 +190,13 @@ export default function App() {
           alignItems: "center",
           boxSizing: "border-box",
           height: "50px",
+          zIndex: 10,
         }}
       >
-        {/* NEW: Left side wrapper for the toggle button and title */}
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          {/* FIX 1: Safely toggle previous state */}
           <button
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            onClick={() => setIsSidebarOpen((prev) => !prev)}
             style={{
               background: "none",
               border: "none",
@@ -233,17 +233,18 @@ export default function App() {
       <div
         style={{ flex: 1, display: "flex", width: "100%", overflow: "hidden" }}
       >
-        {/* UPDATED: Sidebar with dynamic width and transitions */}
+        {/* FIX 2: Added overflowX hidden and stripped padding when closed to kill the invisible wall */}
         <div
           style={{
             width: isSidebarOpen ? "250px" : "0px",
             opacity: isSidebarOpen ? 1 : 0,
             backgroundColor: "#252526",
             borderRight: isSidebarOpen ? "1px solid #3c3c3c" : "none",
-            overflowY: "auto",
-            padding: isSidebarOpen ? "10px 0" : "10px 0",
-            transition: "width 0.3s ease, opacity 0.2s ease",
-            whiteSpace: "nowrap", // Prevents text wrapping weirdly while closing
+            overflowX: "hidden",
+            overflowY: isSidebarOpen ? "auto" : "hidden",
+            padding: isSidebarOpen ? "10px 0" : "0px",
+            transition: "width 0.3s ease, opacity 0.2s ease, padding 0.3s ease",
+            whiteSpace: "nowrap",
           }}
         >
           <div

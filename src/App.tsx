@@ -233,17 +233,20 @@ export default function App() {
       <div
         style={{ flex: 1, display: "flex", width: "100%", overflow: "hidden" }}
       >
-        {/* FIX 2: Added overflowX hidden and stripped padding when closed to kill the invisible wall */}
+        {/* Sidebar */}
         <div
           style={{
             width: isSidebarOpen ? "250px" : "0px",
+            minWidth: isSidebarOpen ? "250px" : "0px", // FIX: Force the width
+            flexShrink: 0, // FIX: Never let Monaco squish this div!
             opacity: isSidebarOpen ? 1 : 0,
             backgroundColor: "#252526",
             borderRight: isSidebarOpen ? "1px solid #3c3c3c" : "none",
             overflowX: "hidden",
             overflowY: isSidebarOpen ? "auto" : "hidden",
             padding: isSidebarOpen ? "10px 0" : "0px",
-            transition: "width 0.3s ease, opacity 0.2s ease, padding 0.3s ease",
+            transition:
+              "width 0.3s ease, min-width 0.3s ease, opacity 0.2s ease, padding 0.3s ease",
             whiteSpace: "nowrap",
           }}
         >

@@ -31,6 +31,127 @@ const getLanguageFromExtension = (filename: string) => {
   }
 };
 
+type FileNode = {
+  name: string;
+  path: string;
+  isFolder: boolean;
+  children: { [key: string]: FileNode };
+};
+
+const buildTree = (paths: string[]) => {
+  const root: FileNode = {
+    name: "root",
+    path: "",
+    isFolder: true,
+    children: {},
+  };
+
+  paths.forEach((path) => {
+    const parts = path.split("/");
+    let current = root;
+
+    parts.forEach((part, i) => {
+      if (!current.children[part]) {
+        current.children[part] = {
+          name: part,
+          path: parts.slice(0, i + 1).join("/"),
+          isFolder: i < parts.length - 1,
+          children: {},
+        };
+      }
+      current = current.children[part];
+    });
+  });
+  return root.children;
+};
+
+const FileTreeNode = ({
+  node,
+  level,
+  activeFileName,
+  onFileClick,
+}: {
+  node: FileNode;
+  level: number;
+  activeFileName: string;
+  onFileClick: (path: string) => void;
+}) => {
+  const [isOpen, setIsOpen] = useState(true);
+  const isSelected = !node.isFolder && activeFileName === node.name;
+
+  if (node.isFolder) {
+    const sortedChildren = Object.values(node.children).sort((a, b) => {
+      if (a.isFolder === b.isFolder) return a.name.localeCompare(b.name);
+      return a.isFolder ? -1 : 1;
+    });
+
+    return (
+      <div>
+        <div
+          onClick={() => setIsOpen(!isOpen)}
+          style={{
+            padding: `4px 16px 4px ${16 + level * 12}px`,
+            cursor: "pointer",
+            color: "#cccccc",
+            fontSize: "13px",
+            fontFamily: "sans-serif",
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = "#2a2d2e";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = "transparent";
+          }}
+        >
+          <span
+            style={{ fontSize: "10px", width: "12px", textAlign: "center" }}
+          >
+            {isOpen ? "▼" : "▶"}
+          </span>
+          <span>{node.name}</span>
+        </div>
+        {isOpen &&
+          sortedChildren.map((child) => (
+            <FileTreeNode
+              key={child.path}
+              node={child}
+              level={level + 1}
+              activeFileName={activeFileName}
+              onFileClick={onFileClick}
+            />
+          ))}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={() => onFileClick(node.path)}
+      style={{
+        padding: `4px 16px 4px ${16 + level * 12 + 18}px`,
+        fontSize: "13px",
+        fontFamily: "sans-serif",
+        color: isSelected ? "#ffffff" : "#cccccc",
+        backgroundColor: isSelected ? "#37373d" : "transparent",
+        cursor: "pointer",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+      onMouseEnter={(e) => {
+        if (!isSelected) e.currentTarget.style.backgroundColor = "#2a2d2e";
+      }}
+      onMouseLeave={(e) => {
+        if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
+      }}
+    >
+      {node.name}
+    </div>
+  );
+};
+
 export default function App() {
   const editorRef = useRef<IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -45,7 +166,8 @@ export default function App() {
   const [code, setCode] = useState<string>("");
   const [fileName, setFileName] = useState<string>("Waiting for VS Code...");
   const [language, setLanguage] = useState<string>("plaintext");
-  const [fileTree, setFileTree] = useState<string[]>([]);
+
+  const [rawFileTree, setRawFileTree] = useState<string[]>([]);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
 
@@ -81,7 +203,7 @@ export default function App() {
     });
 
     room.on("broadcast", { event: "file-tree-update" }, (payload) => {
-      setFileTree(payload.payload.files || []);
+      setRawFileTree(payload.payload.files || []);
     });
 
     room.on("broadcast", { event: "cursor-update" }, (payload) => {
@@ -168,6 +290,13 @@ export default function App() {
     }
   };
 
+  const treeData = buildTree(rawFileTree);
+
+  const sortedTopLevel = Object.values(treeData).sort((a, b) => {
+    if (a.isFolder === b.isFolder) return a.name.localeCompare(b.name);
+    return a.isFolder ? -1 : 1;
+  });
+
   return (
     <div
       style={{
@@ -194,7 +323,6 @@ export default function App() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-          {/* FIX 1: Safely toggle previous state */}
           <button
             onClick={() => setIsSidebarOpen((prev) => !prev)}
             style={{
@@ -233,12 +361,11 @@ export default function App() {
       <div
         style={{ flex: 1, display: "flex", width: "100%", overflow: "hidden" }}
       >
-        {/* Sidebar */}
         <div
           style={{
             width: isSidebarOpen ? "250px" : "0px",
-            minWidth: isSidebarOpen ? "250px" : "0px", // FIX: Force the width
-            flexShrink: 0, // FIX: Never let Monaco squish this div!
+            minWidth: isSidebarOpen ? "250px" : "0px",
+            flexShrink: 0,
             opacity: isSidebarOpen ? 1 : 0,
             backgroundColor: "#252526",
             borderRight: isSidebarOpen ? "1px solid #3c3c3c" : "none",
@@ -285,9 +412,9 @@ export default function App() {
             </button>
           </div>
 
-          <ul style={{ listStyleType: "none", padding: 0, margin: 0 }}>
-            {fileTree.length === 0 ? (
-              <li
+          <div style={{ paddingTop: "4px" }}>
+            {sortedTopLevel.length === 0 ? (
+              <div
                 style={{
                   padding: "10px 16px",
                   fontSize: "12px",
@@ -295,40 +422,20 @@ export default function App() {
                   fontStyle: "italic",
                 }}
               >
-                No files found...
-              </li>
+                No files shared yet. Open a file in VS Code.
+              </div>
             ) : (
-              fileTree.map((path, index) => {
-                const isSelected = path.endsWith(fileName);
-                return (
-                  <li
-                    key={index}
-                    onClick={() => requestFileOpen(path)}
-                    style={{
-                      padding: "4px 16px",
-                      fontSize: "13px",
-                      fontFamily: "sans-serif",
-                      color: isSelected ? "#ffffff" : "#cccccc",
-                      backgroundColor: isSelected ? "#37373d" : "transparent",
-                      cursor: "pointer",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isSelected)
-                        e.currentTarget.style.backgroundColor = "#2a2d2e";
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isSelected)
-                        e.currentTarget.style.backgroundColor = "transparent";
-                    }}
-                  >
-                    {path}
-                  </li>
-                );
-              })
+              sortedTopLevel.map((node) => (
+                <FileTreeNode
+                  key={node.path}
+                  node={node}
+                  level={0}
+                  activeFileName={fileName}
+                  onFileClick={requestFileOpen}
+                />
+              ))
             )}
-          </ul>
+          </div>
         </div>
 
         <div style={{ flex: 1, position: "relative" }}>

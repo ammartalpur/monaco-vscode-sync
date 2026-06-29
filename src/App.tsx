@@ -157,6 +157,13 @@ export default function App() {
   const isApplyingRemoteChange = useRef<boolean>(false);
   const decorationRef = useRef<string[]>([]);
   const fileNameRef = useRef<string>("Waiting for VS Code...");
+  const lastHostCursorRef = useRef<{ line: number; column: number } | null>(
+    null,
+  );
+
+  // --- NEW: Optimization Refs ---
+  const codeUpdateTimeoutRef = useRef<number | null>(null);
+  const cursorThrottleRef = useRef<number>(0);
 
   const [status, setStatus] = useState<
     "Connecting" | "Ready" | "Waiting for URL"
@@ -166,6 +173,23 @@ export default function App() {
   const [language, setLanguage] = useState<string>("plaintext");
   const [rawFileTree, setRawFileTree] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+
+  const renderHostCursor = (line: number, column: number) => {
+    if (editorRef.current && monacoRef.current) {
+      decorationRef.current = editorRef.current.deltaDecorations(
+        decorationRef.current,
+        [
+          {
+            range: new monacoRef.current.Range(line, column, line, column),
+            options: {
+              className: "remote-cursor",
+              hoverMessage: { value: "VS Code Host" },
+            },
+          },
+        ],
+      );
+    }
+  };
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -193,6 +217,15 @@ export default function App() {
           setFileName(incomingFileName);
           setLanguage(getLanguageFromExtension(incomingFileName));
         }
+
+        if (lastHostCursorRef.current) {
+          setTimeout(() => {
+            renderHostCursor(
+              lastHostCursorRef.current!.line,
+              lastHostCursorRef.current!.column,
+            );
+          }, 20);
+        }
       }
     });
 
@@ -202,20 +235,8 @@ export default function App() {
 
     room.on("broadcast", { event: "cursor-update" }, (payload) => {
       const { line, column } = payload.payload;
-      if (editorRef.current && monacoRef.current) {
-        decorationRef.current = editorRef.current.deltaDecorations(
-          decorationRef.current,
-          [
-            {
-              range: new monacoRef.current.Range(line, column, line, column),
-              options: {
-                className: "remote-cursor",
-                hoverMessage: { value: "VS Code Host" },
-              },
-            },
-          ],
-        );
-      }
+      lastHostCursorRef.current = { line, column };
+      renderHostCursor(line, column);
     });
 
     room.subscribe((status) => {
@@ -242,21 +263,26 @@ export default function App() {
     monacoRef.current = monaco;
     editor.focus();
 
-    // --- NEW: Broadcast Web User's cursor position to VS Code ---
     editor.onDidChangeCursorPosition((e) => {
-      if (
-        channelRef.current &&
-        fileNameRef.current !== "Waiting for VS Code..."
-      ) {
-        channelRef.current.send({
-          type: "broadcast",
-          event: "cursor-update-web",
-          payload: {
-            line: e.position.lineNumber - 1, // VS Code is 0-indexed internally
-            column: e.position.column - 1, // VS Code is 0-indexed internally
-            fileName: fileNameRef.current,
-          },
-        });
+      const now = Date.now();
+
+      // OPTIMIZATION: Throttle cursor to 50ms intervals
+      if (now - cursorThrottleRef.current > 50) {
+        cursorThrottleRef.current = now;
+        if (
+          channelRef.current &&
+          fileNameRef.current !== "Waiting for VS Code..."
+        ) {
+          channelRef.current.send({
+            type: "broadcast",
+            event: "cursor-update-web",
+            payload: {
+              line: e.position.lineNumber - 1,
+              column: e.position.column - 1,
+              fileName: fileNameRef.current,
+            },
+          });
+        }
       }
     });
   };
@@ -268,13 +294,21 @@ export default function App() {
       return;
     }
     setCode(value);
-    if (channelRef.current) {
-      channelRef.current.send({
-        type: "broadcast",
-        event: "code-update",
-        payload: { newCode: value, fileName: fileNameRef.current },
-      });
+
+    // OPTIMIZATION: Debounce text updates (500ms delay)
+    if (codeUpdateTimeoutRef.current) {
+      window.clearTimeout(codeUpdateTimeoutRef.current);
     }
+
+    codeUpdateTimeoutRef.current = window.setTimeout(() => {
+      if (channelRef.current) {
+        channelRef.current.send({
+          type: "broadcast",
+          event: "code-update",
+          payload: { newCode: value, fileName: fileNameRef.current },
+        });
+      }
+    }, 500);
   };
 
   const requestFileOpen = (path: string) => {
@@ -317,16 +351,7 @@ export default function App() {
         boxSizing: "border-box",
       }}
     >
-      <style>{`
-        .remote-cursor {
-          border-left: 2px solid #d97706 !important;
-          margin-left: -1px;
-          position: absolute;
-          z-index: 10;
-          pointer-events: none;
-        }
-      `}</style>
-
+      <style>{`.remote-cursor { border-left: 2px solid #d97706 !important; margin-left: -1px; position: absolute; z-index: 10; pointer-events: none; }`}</style>
       <header
         style={{
           padding: "12px 24px",
@@ -440,7 +465,7 @@ export default function App() {
                   fontStyle: "italic",
                 }}
               >
-                No files shared yet. Open a file in VS Code.
+                No files shared yet.
               </div>
             ) : (
               sortedTopLevel.map((node) => (

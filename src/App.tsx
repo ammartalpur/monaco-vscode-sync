@@ -185,6 +185,12 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(false);
   const [isProcessRunning, setIsProcessRunning] = useState<boolean>(false);
+  // Ref mirror so xterm's onKey closure always sees the current value
+  const isProcessRunningRef = useRef<boolean>(false);
+  const setProcessRunning = (val: boolean) => {
+    isProcessRunningRef.current = val;
+    setIsProcessRunning(val);
+  };
 
   // Ask for username on load
   useEffect(() => {
@@ -257,20 +263,24 @@ export default function App() {
         const cmd = inputBufferRef.current.trim();
         term.write("\r\n");
         if (cmd && channel) {
-          if (isProcessRunning) {
+          // Use ref — not state — to avoid stale closure
+          if (isProcessRunningRef.current) {
             channel.send({
               type: "broadcast",
               event: "terminal-input",
               payload: { input: cmd + "\n" },
             });
           } else {
-            setIsProcessRunning(true);
+            setProcessRunning(true);
             channel.send({
               type: "broadcast",
               event: "run-command",
               payload: { command: cmd },
             });
           }
+        } else if (!cmd) {
+          // Empty enter with no process: just reprint prompt
+          term.write("\x1b[33m$ \x1b[0m");
         }
         inputBufferRef.current = "";
         return;
@@ -283,7 +293,7 @@ export default function App() {
             event: "kill-process",
             payload: {},
           });
-          setIsProcessRunning(false);
+          setProcessRunning(false);
         }
         term.write("^C\r\n\x1b[33m$ \x1b[0m");
         inputBufferRef.current = "";
@@ -313,7 +323,7 @@ export default function App() {
     return () => {
       observer.disconnect();
     };
-  }, [isTerminalOpen, isProcessRunning]);
+  }, [isTerminalOpen]);
 
   // Cleanup xterm on unmount
   useEffect(() => {
@@ -439,12 +449,16 @@ export default function App() {
       const { data } = payload.payload;
       if (xtermRef.current && typeof data === "string") {
         xtermRef.current.write(data);
+        // The extension sends this sentinel when the process exits
         if (
           data.includes("[Exited with code") ||
           data.includes("[Process killed")
         ) {
-          setIsProcessRunning(false);
-          xtermRef.current.write("\x1b[33m$ \x1b[0m");
+          setProcessRunning(false);
+          // Small delay so the exit line renders before the prompt appears
+          setTimeout(() => {
+            xtermRef.current?.write("\r\n\x1b[33m$ \x1b[0m");
+          }, 30);
         }
       }
     });
@@ -556,7 +570,7 @@ export default function App() {
         event: "kill-process",
         payload: {},
       });
-      setIsProcessRunning(false);
+      setProcessRunning(false);
       xtermRef.current?.write("\r\n\x1b[33m$ \x1b[0m");
     }
   };

@@ -155,13 +155,18 @@ export default function App() {
   const monacoRef = useRef<Monaco | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const isApplyingRemoteChange = useRef<boolean>(false);
-  const decorationRef = useRef<string[]>([]);
+  // Replaced decorationRef with nameTagWidget for floating label
+  const nameTagWidget = useRef<HTMLDivElement | null>(null);
   const fileNameRef = useRef<string>("Waiting for VS Code...");
-  const lastHostCursorRef = useRef<{ line: number; column: number } | null>(
-    null,
-  );
 
-  // --- NEW: Optimization Refs ---
+  // Cache the name and position
+  const lastHostCursorRef = useRef<{
+    line: number;
+    column: number;
+    userName?: string;
+  } | null>(null);
+  const webUserNameRef = useRef<string>("Web User");
+
   const codeUpdateTimeoutRef = useRef<number | null>(null);
   const cursorThrottleRef = useRef<number>(0);
 
@@ -174,20 +179,92 @@ export default function App() {
   const [rawFileTree, setRawFileTree] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
 
-  const renderHostCursor = (line: number, column: number) => {
-    if (editorRef.current && monacoRef.current) {
-      decorationRef.current = editorRef.current.deltaDecorations(
-        decorationRef.current,
-        [
-          {
-            range: new monacoRef.current.Range(line, column, line, column),
-            options: {
-              className: "remote-cursor",
-              hoverMessage: { value: "VS Code Host" },
-            },
+  // Ask for Web User name on load
+  useEffect(() => {
+    let savedName = localStorage.getItem("tameer-username");
+    if (!savedName) {
+      savedName =
+        prompt("Enter your name for Tameer Live Sync:", "Guest Developer") ||
+        "Guest Developer";
+      localStorage.setItem("tameer-username", savedName);
+    }
+    webUserNameRef.current = savedName;
+  }, []);
+
+  // Renders a floating name tag at the host cursor position
+  const renderHostCursor = (
+    line: number,
+    column: number,
+    userName?: string,
+  ) => {
+    if (!editorRef.current || !monacoRef.current) return;
+
+    const editor = editorRef.current;
+    const displayName = userName ? `${userName} (Host)` : "VS Code Host";
+
+    // Remove the previous tag if it exists
+    if (nameTagWidget.current) {
+      nameTagWidget.current.remove();
+      nameTagWidget.current = null;
+    }
+
+    const editorDom = editor.getDomNode();
+    if (!editorDom) return;
+
+    // Create the cursor line decoration (the amber vertical bar)
+    const monacoRange = new monacoRef.current.Range(line, column, line, column);
+    editor.deltaDecorations(
+      [],
+      [
+        {
+          range: monacoRange,
+          options: {
+            className: "remote-cursor",
           },
-        ],
+        },
+      ],
+    );
+
+    // Create the floating name tag element
+    const tag = document.createElement("div");
+    tag.className = "remote-name-tag";
+    tag.innerText = displayName;
+    tag.style.position = "absolute";
+    tag.style.background = "#d97706";
+    tag.style.color = "white";
+    tag.style.padding = "2px 6px";
+    tag.style.fontSize = "10px";
+    tag.style.borderRadius = "4px";
+    tag.style.pointerEvents = "none";
+    tag.style.zIndex = "100";
+    tag.style.whiteSpace = "nowrap";
+
+    editorDom.style.position = "relative";
+    editorDom.appendChild(tag);
+    nameTagWidget.current = tag;
+
+    // Use Monaco's layout info to calculate pixel position
+    try {
+      const layoutInfo = editor.getLayoutInfo();
+      const scrollTop = editor.getScrollTop();
+      const scrollLeft = editor.getScrollLeft();
+      const lineHeight = editor.getOption(
+        (monacoRef.current as Monaco).editor.EditorOption.lineHeight,
       );
+
+      // Approx character width (monospace ~7.2px at 14px font)
+      const charWidth = 7.2;
+      const contentLeft = layoutInfo.contentLeft;
+
+      const top = (line - 1) * lineHeight - scrollTop - 20; // 20px above cursor line
+      const left = contentLeft + (column - 1) * charWidth - scrollLeft;
+
+      tag.style.top = `${Math.max(0, top)}px`;
+      tag.style.left = `${Math.max(0, left)}px`;
+    } catch {
+      // Fallback: place tag at top-left of editor if position calc fails
+      tag.style.top = "4px";
+      tag.style.left = "4px";
     }
   };
 
@@ -223,6 +300,7 @@ export default function App() {
             renderHostCursor(
               lastHostCursorRef.current!.line,
               lastHostCursorRef.current!.column,
+              lastHostCursorRef.current!.userName,
             );
           }, 20);
         }
@@ -233,10 +311,11 @@ export default function App() {
       setRawFileTree(payload.payload.files || []);
     });
 
+    // Receive cursor position from host and render floating name tag
     room.on("broadcast", { event: "cursor-update" }, (payload) => {
-      const { line, column } = payload.payload;
-      lastHostCursorRef.current = { line, column };
-      renderHostCursor(line, column);
+      const { line, column, userName } = payload.payload;
+      lastHostCursorRef.current = { line, column, userName };
+      renderHostCursor(line, column, userName);
     });
 
     room.subscribe((status) => {
@@ -265,8 +344,6 @@ export default function App() {
 
     editor.onDidChangeCursorPosition((e) => {
       const now = Date.now();
-
-      // OPTIMIZATION: Throttle cursor to 50ms intervals
       if (now - cursorThrottleRef.current > 50) {
         cursorThrottleRef.current = now;
         if (
@@ -280,9 +357,21 @@ export default function App() {
               line: e.position.lineNumber - 1,
               column: e.position.column - 1,
               fileName: fileNameRef.current,
+              userName: webUserNameRef.current,
             },
           });
         }
+      }
+    });
+
+    // Re-position the name tag on scroll so it tracks correctly
+    editor.onDidScrollChange(() => {
+      if (lastHostCursorRef.current) {
+        renderHostCursor(
+          lastHostCursorRef.current.line,
+          lastHostCursorRef.current.column,
+          lastHostCursorRef.current.userName,
+        );
       }
     });
   };
@@ -295,7 +384,6 @@ export default function App() {
     }
     setCode(value);
 
-    // OPTIMIZATION: Debounce text updates (500ms delay)
     if (codeUpdateTimeoutRef.current) {
       window.clearTimeout(codeUpdateTimeoutRef.current);
     }
@@ -351,7 +439,22 @@ export default function App() {
         boxSizing: "border-box",
       }}
     >
-      <style>{`.remote-cursor { border-left: 2px solid #d97706 !important; margin-left: -1px; position: absolute; z-index: 10; pointer-events: none; }`}</style>
+      <style>{`
+        .remote-cursor {
+          border-left: 2px solid #d97706 !important;
+          margin-left: -1px;
+          position: absolute;
+          z-index: 10;
+          pointer-events: none;
+        }
+        .remote-name-tag {
+          font-family: sans-serif;
+          font-weight: 600;
+          letter-spacing: 0.3px;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+          transition: top 0.05s ease, left 0.05s ease;
+        }
+      `}</style>
       <header
         style={{
           padding: "12px 24px",

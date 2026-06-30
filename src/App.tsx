@@ -164,6 +164,7 @@ export default function App() {
     line: number;
     column: number;
     userName?: string;
+    fileName?: string;
   } | null>(null);
   const webUserNameRef = useRef<string>("Web User");
   const codeUpdateTimeoutRef = useRef<number | null>(null);
@@ -175,6 +176,8 @@ export default function App() {
   const fitAddonRef = useRef<FitAddon | null>(null);
   const inputBufferRef = useRef<string>("");
   const terminalResizeObserver = useRef<ResizeObserver | null>(null);
+  // Buffer output that arrives before xterm is mounted
+  const pendingOutputRef = useRef<string[]>([]);
 
   const [status, setStatus] = useState<
     "Connecting" | "Ready" | "Waiting for URL"
@@ -248,6 +251,12 @@ export default function App() {
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
+    // Flush any output that arrived before the terminal was opened
+    if (pendingOutputRef.current.length > 0) {
+      pendingOutputRef.current.forEach((chunk) => term.write(chunk));
+      pendingOutputRef.current = [];
+    }
+
     term.writeln("\x1b[33m┌─────────────────────────────────┐\x1b[0m");
     term.writeln("\x1b[33m│   Tameer Terminal  ⚡             │\x1b[0m");
     term.writeln("\x1b[33m└─────────────────────────────────┘\x1b[0m");
@@ -264,7 +273,6 @@ export default function App() {
         const cmd = inputBufferRef.current.trim();
         term.write("\r\n");
         if (cmd && channel) {
-          // Use ref — not state — to avoid stale closure
           if (isProcessRunningRef.current) {
             channel.send({
               type: "broadcast",
@@ -280,7 +288,6 @@ export default function App() {
             });
           }
         } else if (!cmd) {
-          // Empty enter with no process: just reprint prompt
           term.write("\x1b[33m$ \x1b[0m");
         }
         inputBufferRef.current = "";
@@ -334,86 +341,99 @@ export default function App() {
     };
   }, []);
 
-const renderHostCursor = useCallback(
-  (
-    line: number,
-    column: number,
-    userName?: string,
-    cursorFileName?: string,
-  ) => {
-    if (!editorRef.current || !monacoRef.current) return;
+  // ── Remove the host cursor decoration + name tag entirely ─────────────────
+  const clearHostCursor = useCallback(() => {
     const editor = editorRef.current;
-
-    // FIX: If the cursor belongs to a different file, erase it from the screen!
-    if (cursorFileName && cursorFileName !== fileNameRef.current) {
+    if (editor) {
       decorationRef.current = editor.deltaDecorations(
         decorationRef.current,
         [],
       );
-      if (nameTagWidget.current) {
-        nameTagWidget.current.remove();
-        nameTagWidget.current = null;
-      }
-      return;
     }
-
-    const displayName = userName ? `${userName} (Host)` : "VS Code Host";
-
     if (nameTagWidget.current) {
       nameTagWidget.current.remove();
       nameTagWidget.current = null;
     }
+  }, []);
 
-    const editorDom = editor.getDomNode();
-    if (!editorDom) return;
+  // ── Render the host's cursor using Monaco's real coordinate API ───────────
+  const renderHostCursor = useCallback(
+    (
+      line: number,
+      column: number,
+      userName?: string,
+      cursorFileName?: string,
+    ) => {
+      const editor = editorRef.current;
+      const monacoNs = monacoRef.current;
+      if (!editor || !monacoNs) return;
 
-    // FIX: Use decorationRef so it deletes the old ghost cursor before drawing the new one
-    decorationRef.current = editor.deltaDecorations(decorationRef.current, [
-      {
-        range: new monacoRef.current.Range(line, column, line, column),
-        options: { className: "remote-cursor" },
-      },
-    ]);
+      // If this cursor belongs to a file we're not currently viewing, hide it
+      if (cursorFileName && cursorFileName !== fileNameRef.current) {
+        clearHostCursor();
+        return;
+      }
 
-    const tag = document.createElement("div");
-    tag.className = "remote-name-tag";
-    tag.innerText = displayName;
-    Object.assign(tag.style, {
-      position: "absolute",
-      background: "#d97706",
-      color: "white",
-      padding: "2px 6px",
-      fontSize: "10px",
-      borderRadius: "4px",
-      pointerEvents: "none",
-      zIndex: "100",
-      whiteSpace: "nowrap",
-    });
+      const displayName = userName ? `${userName} (Host)` : "VS Code Host";
+      const position = { lineNumber: line, column: column };
 
-    editorDom.style.position = "relative";
-    editorDom.appendChild(tag);
-    nameTagWidget.current = tag;
+      // Decoration: always pass the PREVIOUS decoration id array so Monaco
+      // replaces it instead of stacking a new one on top — this is what
+      // prevents the "multiple cursors" bug.
+      decorationRef.current = editor.deltaDecorations(decorationRef.current, [
+        {
+          range: new monacoNs.Range(line, column, line, column),
+          options: { className: "remote-cursor" },
+        },
+      ]);
 
-    try {
-      const layoutInfo = editor.getLayoutInfo();
-      const scrollTop = editor.getScrollTop();
-      const scrollLeft = editor.getScrollLeft();
-      const lineHeight = editor.getOption(
-        (monacoRef.current as Monaco).editor.EditorOption.lineHeight,
-      );
-      const charWidth = 7.2;
-      const top = (line - 1) * lineHeight - scrollTop - 20;
-      const left =
-        layoutInfo.contentLeft + (column - 1) * charWidth - scrollLeft;
-      tag.style.top = `${Math.max(0, top)}px`;
-      tag.style.left = `${Math.max(0, left)}px`;
-    } catch {
-      tag.style.top = "4px";
-      tag.style.left = "4px";
-    }
-  },
-  [],
-);
+      // Create the tag once, then just reposition it on every update —
+      // recreating it every call is what caused jitter/duplication before.
+      if (!nameTagWidget.current) {
+        const tag = document.createElement("div");
+        tag.className = "remote-name-tag";
+        Object.assign(tag.style, {
+          position: "absolute",
+          background: "#d97706",
+          color: "white",
+          padding: "2px 6px",
+          fontSize: "10px",
+          borderRadius: "4px",
+          pointerEvents: "none",
+          zIndex: "100",
+          whiteSpace: "nowrap",
+          transform: "translateY(-100%)", // sits just above the cursor line
+        });
+        const editorDom = editor.getDomNode();
+        if (editorDom) {
+          editorDom.style.position = "relative";
+          editorDom.appendChild(tag);
+          nameTagWidget.current = tag;
+        }
+      }
+
+      const tag = nameTagWidget.current;
+      if (!tag) return;
+      tag.innerText = displayName;
+
+      // Use Monaco's own API to convert a buffer position into pixel
+      // coordinates relative to the editor — this is what was missing.
+      // It accounts for scroll, line height, and actual glyph width
+      // automatically, instead of guessing with a fixed charWidth.
+      const visiblePos = editor.getScrolledVisiblePosition(position);
+      if (!visiblePos) {
+        // Position is scrolled out of view — hide the tag rather than
+        // drawing it at a wrong (0,0) fallback location.
+        tag.style.display = "none";
+        return;
+      }
+
+      tag.style.display = "block";
+      tag.style.top = `${Math.max(0, visiblePos.top)}px`;
+      tag.style.left = `${Math.max(0, visiblePos.left)}px`;
+    },
+    [clearHostCursor],
+  );
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -446,6 +466,7 @@ const renderHostCursor = useCallback(
               lastHostCursorRef.current!.line,
               lastHostCursorRef.current!.column,
               lastHostCursorRef.current!.userName,
+              lastHostCursorRef.current!.fileName,
             );
           }, 20);
         }
@@ -456,31 +477,43 @@ const renderHostCursor = useCallback(
       setRawFileTree(payload.payload.files || []);
     });
 
- room.on("broadcast", { event: "cursor-update" }, (payload) => {
-   // Catch the fileName that VS Code is now sending
-   const { line, column, userName, fileName } = payload.payload;
+    room.on("broadcast", { event: "cursor-update" }, (payload) => {
+      const {
+        line,
+        column,
+        userName,
+        fileName: cursorFileName,
+      } = payload.payload;
+      lastHostCursorRef.current = {
+        line,
+        column,
+        userName,
+        fileName: cursorFileName,
+      };
+      renderHostCursor(line, column, userName, cursorFileName);
+    });
 
-   // Update memory and render
-   lastHostCursorRef.current = { line, column, userName, fileName };
-   renderHostCursor(line, column, userName, fileName);
- });
-
-    // Receive terminal output from VS Code and write to xterm
+    // Receive terminal output from VS Code and write to xterm.
+    // Buffer it if xterm hasn't mounted yet (panel still closed).
     room.on("broadcast", { event: "terminal-output" }, (payload) => {
       const { data } = payload.payload;
-      if (xtermRef.current && typeof data === "string") {
-        xtermRef.current.write(data);
-        // The extension sends this sentinel when the process exits
-        if (
-          data.includes("[Exited with code") ||
-          data.includes("[Process killed")
-        ) {
-          setProcessRunning(false);
-          // Small delay so the exit line renders before the prompt appears
-          setTimeout(() => {
-            xtermRef.current?.write("\r\n\x1b[33m$ \x1b[0m");
-          }, 30);
-        }
+      if (typeof data !== "string") return;
+
+      if (!xtermRef.current) {
+        pendingOutputRef.current.push(data);
+        return;
+      }
+
+      xtermRef.current.write(data);
+      if (
+        data.includes("[Exited with code") ||
+        data.includes("[Process killed") ||
+        data.includes("[Terminal Error")
+      ) {
+        setProcessRunning(false);
+        setTimeout(() => {
+          xtermRef.current?.write("\r\n\x1b[33m$ \x1b[0m");
+        }, 30);
       }
     });
 
@@ -529,12 +562,14 @@ const renderHostCursor = useCallback(
       }
     });
 
+    // Reposition the tag (not recreate it) on scroll
     editor.onDidScrollChange(() => {
       if (lastHostCursorRef.current) {
         renderHostCursor(
           lastHostCursorRef.current.line,
           lastHostCursorRef.current.column,
           lastHostCursorRef.current.userName,
+          lastHostCursorRef.current.fileName,
         );
       }
     });
@@ -563,6 +598,9 @@ const renderHostCursor = useCallback(
   const requestFileOpen = (path: string) => {
     if (channelRef.current) {
       const newTargetFile = path.split("/").pop() || path;
+      // Clear the previous file's cursor immediately — it belongs to a
+      // different document now and shouldn't linger on screen.
+      clearHostCursor();
       fileNameRef.current = newTargetFile;
       setFileName(newTargetFile);
       setCode("// Loading file from VS Code...");

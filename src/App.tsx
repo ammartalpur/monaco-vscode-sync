@@ -157,7 +157,7 @@ export default function App() {
 
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
-  const inputBufferRef = useRef<string>("");
+  // const inputBufferRef = useRef<string>("");
 
   const cwdRef = useRef<string>("~");
   const hostNameRef = useRef<string>("host");

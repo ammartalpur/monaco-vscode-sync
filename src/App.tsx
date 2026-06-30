@@ -169,6 +169,11 @@ export default function App() {
   const webUserNameRef = useRef<string>("Web User");
   const codeUpdateTimeoutRef = useRef<number | null>(null);
   const cursorThrottleRef = useRef<number>(0);
+  // Delta-sync: guards against re-broadcasting changes we just applied
+  // from a remote delta (prevents echo loops), and a periodic full-doc
+  // reconciliation timer as a correctness safety net.
+  const isApplyingRemoteDelta = useRef<boolean>(false);
+  const reconcileIntervalRef = useRef<number | null>(null);
 
   // Terminal refs
   const terminalRef = useRef<HTMLDivElement | null>(null);
@@ -176,6 +181,7 @@ export default function App() {
   const fitAddonRef = useRef<FitAddon | null>(null);
   const inputBufferRef = useRef<string>("");
   const terminalResizeObserver = useRef<ResizeObserver | null>(null);
+  // Buffer output that arrives before xterm is mounted
   const pendingOutputRef = useRef<string[]>([]);
 
   const [status, setStatus] = useState<
@@ -188,6 +194,7 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(false);
   const [isProcessRunning, setIsProcessRunning] = useState<boolean>(false);
+  // Ref mirror so xterm's onKey closure always sees the current value
   const isProcessRunningRef = useRef<boolean>(false);
   const setProcessRunning = (val: boolean) => {
     isProcessRunningRef.current = val;
@@ -209,7 +216,7 @@ export default function App() {
   // Initialize xterm.js when terminal panel opens
   useEffect(() => {
     if (!isTerminalOpen || !terminalRef.current) return;
-    if (xtermRef.current) return; 
+    if (xtermRef.current) return; // already initialized
 
     const term = new Terminal({
       theme: {
@@ -433,6 +440,51 @@ export default function App() {
     [clearHostCursor],
   );
 
+  // Applies a batch of remote edit operations directly to the Monaco model.
+  // This is the receiving end of delta sync — it edits only the changed
+  // range instead of replacing the whole document text, which is both
+  // faster and preserves the local cursor/scroll position and undo stack.
+  const applyRemoteOps = useCallback(
+    (
+      ops: Array<{
+        startLine: number;
+        startColumn: number;
+        endLine: number;
+        endColumn: number;
+        text: string;
+      }>,
+    ) => {
+      const editor = editorRef.current;
+      const monacoNs = monacoRef.current;
+      const model = editor?.getModel();
+      if (!editor || !monacoNs || !model) return;
+
+      isApplyingRemoteDelta.current = true;
+      try {
+        const edits = ops.map((op) => ({
+          range: new monacoNs.Range(
+            op.startLine,
+            op.startColumn,
+            op.endLine,
+            op.endColumn,
+          ),
+          text: op.text,
+          forceMoveMarkers: true,
+        }));
+        model.applyEdits(edits);
+        setCode(model.getValue());
+      } finally {
+        // onDidChangeModelContent fires synchronously inside applyEdits,
+        // so the flag must still be true during that callback — clear it
+        // right after on the next microtask.
+        Promise.resolve().then(() => {
+          isApplyingRemoteDelta.current = false;
+        });
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const roomId = urlParams.get("room");
@@ -445,30 +497,61 @@ export default function App() {
       config: { broadcast: { self: false } },
     });
 
+    // Full-document sync: used only for initial file load, file switches,
+    // and the periodic reconciliation safety net — NOT for every keystroke
+    // anymore (that's code-delta below). We skip replacing the model if
+    // content already matches, so the 10s reconcile tick doesn't reset the
+    // cursor position or undo stack when nothing actually drifted.
     room.on("broadcast", { event: "code-update" }, (payload) => {
       const incomingFileName = payload.payload.fileName;
-      if (
+      const isSameFile =
         fileNameRef.current === "Waiting for VS Code..." ||
-        fileNameRef.current === incomingFileName
-      ) {
-        isApplyingRemoteChange.current = true;
-        setCode(payload.payload.newCode);
+        fileNameRef.current === incomingFileName;
+      if (!isSameFile) return;
+
+      const model = editorRef.current?.getModel();
+      const currentText = model ? model.getValue() : code;
+
+      if (currentText === payload.payload.newCode) {
+        // Already in sync — nothing to do, avoids a no-op cursor jump.
         if (incomingFileName) {
           fileNameRef.current = incomingFileName;
           setFileName(incomingFileName);
           setLanguage(getLanguageFromExtension(incomingFileName));
         }
-        if (lastHostCursorRef.current) {
-          setTimeout(() => {
-            renderHostCursor(
-              lastHostCursorRef.current!.line,
-              lastHostCursorRef.current!.column,
-              lastHostCursorRef.current!.userName,
-              lastHostCursorRef.current!.fileName,
-            );
-          }, 20);
-        }
+        return;
       }
+
+      isApplyingRemoteChange.current = true;
+      setCode(payload.payload.newCode);
+      if (incomingFileName) {
+        fileNameRef.current = incomingFileName;
+        setFileName(incomingFileName);
+        setLanguage(getLanguageFromExtension(incomingFileName));
+      }
+      if (lastHostCursorRef.current) {
+        setTimeout(() => {
+          renderHostCursor(
+            lastHostCursorRef.current!.line,
+            lastHostCursorRef.current!.column,
+            lastHostCursorRef.current!.userName,
+            lastHostCursorRef.current!.fileName,
+          );
+        }, 20);
+      }
+    });
+
+    // Real-time delta sync: the actual keystroke-level edit stream.
+    // Applies edit operations directly to the Monaco model the instant
+    // they arrive — no debounce, no full-document replace.
+    room.on("broadcast", { event: "code-delta" }, (payload) => {
+      const incomingFileName = payload.payload.fileName;
+      const isSameFile =
+        fileNameRef.current === "Waiting for VS Code..." ||
+        fileNameRef.current === incomingFileName;
+      if (!isSameFile) return;
+      if (!payload.payload.ops) return;
+      applyRemoteOps(payload.payload.ops);
     });
 
     room.on("broadcast", { event: "file-tree-update" }, (payload) => {
@@ -531,33 +614,60 @@ export default function App() {
     return () => {
       supabase.removeChannel(room);
     };
-  }, [renderHostCursor]);
+  }, [renderHostCursor, applyRemoteOps]);
 
   const handleEditorDidMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
     editor.focus();
 
+    // Cursor updates are tiny (a few numbers) so they're sent on every
+    // event with no throttle — full real-time, negligible bandwidth cost.
     editor.onDidChangeCursorPosition((e) => {
-      const now = Date.now();
-      if (now - cursorThrottleRef.current > 50) {
-        cursorThrottleRef.current = now;
-        if (
-          channelRef.current &&
-          fileNameRef.current !== "Waiting for VS Code..."
-        ) {
-          channelRef.current.send({
-            type: "broadcast",
-            event: "cursor-update-web",
-            payload: {
-              line: e.position.lineNumber - 1,
-              column: e.position.column - 1,
-              fileName: fileNameRef.current,
-              userName: webUserNameRef.current,
-            },
-          });
-        }
+      if (
+        channelRef.current &&
+        fileNameRef.current !== "Waiting for VS Code..."
+      ) {
+        channelRef.current.send({
+          type: "broadcast",
+          event: "cursor-update-web",
+          payload: {
+            line: e.position.lineNumber - 1,
+            column: e.position.column - 1,
+            fileName: fileNameRef.current,
+            userName: webUserNameRef.current,
+          },
+        });
       }
+    });
+
+    // ── Delta sync: broadcast each keystroke's edit operation immediately,
+    // instead of debouncing and sending the whole document. Monaco already
+    // gives us the exact range + inserted text for every change, so there's
+    // no diffing to do — we just forward it.
+    editor.onDidChangeModelContent((event) => {
+      // Don't re-broadcast changes we just applied FROM a remote delta —
+      // this is what prevents an infinite echo loop between the two sides.
+      if (isApplyingRemoteDelta.current) return;
+      if (!channelRef.current) return;
+      if (fileNameRef.current === "Waiting for VS Code...") return;
+
+      // event.changes can contain multiple ops (e.g. multi-cursor edit,
+      // paste, find/replace-all) — forward them all as one batched payload
+      // so the other side applies them atomically and in the right order.
+      const ops = event.changes.map((c) => ({
+        startLine: c.range.startLineNumber,
+        startColumn: c.range.startColumn,
+        endLine: c.range.endLineNumber,
+        endColumn: c.range.endColumn,
+        text: c.text,
+      }));
+
+      channelRef.current.send({
+        type: "broadcast",
+        event: "code-delta",
+        payload: { ops, fileName: fileNameRef.current },
+      });
     });
 
     // Reposition the tag (not recreate it) on scroll
@@ -573,24 +683,38 @@ export default function App() {
     });
   };
 
+  // Periodic full-document reconciliation: a safety net in case any delta
+  // gets dropped or arrives out of order over the network. Runs every 10s
+  // and only forces a resync if content has actually drifted.
+  useEffect(() => {
+    reconcileIntervalRef.current = window.setInterval(() => {
+      if (!channelRef.current) return;
+      if (fileNameRef.current === "Waiting for VS Code...") return;
+      channelRef.current.send({
+        type: "broadcast",
+        event: "request-sync",
+        payload: {},
+      });
+    }, 10000);
+
+    return () => {
+      if (reconcileIntervalRef.current) {
+        window.clearInterval(reconcileIntervalRef.current);
+      }
+    };
+  }, []);
+
   const handleEditorChange = (value: string | undefined) => {
+    // Kept only to satisfy the <Editor onChange> prop / keep `code` state
+    // in sync for cases outside delta application (e.g. initial load).
+    // Actual sync now happens in onDidChangeModelContent above.
     if (value === undefined) return;
     if (isApplyingRemoteChange.current) {
       isApplyingRemoteChange.current = false;
       return;
     }
+    if (isApplyingRemoteDelta.current) return;
     setCode(value);
-    if (codeUpdateTimeoutRef.current)
-      window.clearTimeout(codeUpdateTimeoutRef.current);
-    codeUpdateTimeoutRef.current = window.setTimeout(() => {
-      if (channelRef.current) {
-        channelRef.current.send({
-          type: "broadcast",
-          event: "code-update",
-          payload: { newCode: value, fileName: fileNameRef.current },
-        });
-      }
-    }, 500);
   };
 
   const requestFileOpen = (path: string) => {

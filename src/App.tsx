@@ -176,7 +176,6 @@ export default function App() {
   const fitAddonRef = useRef<FitAddon | null>(null);
   const inputBufferRef = useRef<string>("");
   const terminalResizeObserver = useRef<ResizeObserver | null>(null);
-  // Buffer output that arrives before xterm is mounted
   const pendingOutputRef = useRef<string[]>([]);
 
   const [status, setStatus] = useState<
@@ -189,7 +188,6 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(false);
   const [isProcessRunning, setIsProcessRunning] = useState<boolean>(false);
-  // Ref mirror so xterm's onKey closure always sees the current value
   const isProcessRunningRef = useRef<boolean>(false);
   const setProcessRunning = (val: boolean) => {
     isProcessRunningRef.current = val;
@@ -211,7 +209,7 @@ export default function App() {
   // Initialize xterm.js when terminal panel opens
   useEffect(() => {
     if (!isTerminalOpen || !terminalRef.current) return;
-    if (xtermRef.current) return; // already initialized
+    if (xtermRef.current) return; 
 
     const term = new Terminal({
       theme: {

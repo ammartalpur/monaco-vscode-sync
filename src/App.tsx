@@ -158,6 +158,7 @@ export default function App() {
   const channelRef = useRef<RealtimeChannel | null>(null);
   const isApplyingRemoteChange = useRef<boolean>(false);
   const nameTagWidget = useRef<HTMLDivElement | null>(null);
+  const decorationRef = useRef<string[]>([]);
   const fileNameRef = useRef<string>("Waiting for VS Code...");
   const lastHostCursorRef = useRef<{
     line: number;
@@ -333,69 +334,86 @@ export default function App() {
     };
   }, []);
 
-  const renderHostCursor = useCallback(
-    (line: number, column: number, userName?: string) => {
-      if (!editorRef.current || !monacoRef.current) return;
-      const editor = editorRef.current;
-      const displayName = userName ? `${userName} (Host)` : "VS Code Host";
+const renderHostCursor = useCallback(
+  (
+    line: number,
+    column: number,
+    userName?: string,
+    cursorFileName?: string,
+  ) => {
+    if (!editorRef.current || !monacoRef.current) return;
+    const editor = editorRef.current;
 
+    // FIX: If the cursor belongs to a different file, erase it from the screen!
+    if (cursorFileName && cursorFileName !== fileNameRef.current) {
+      decorationRef.current = editor.deltaDecorations(
+        decorationRef.current,
+        [],
+      );
       if (nameTagWidget.current) {
         nameTagWidget.current.remove();
         nameTagWidget.current = null;
       }
+      return;
+    }
 
-      const editorDom = editor.getDomNode();
-      if (!editorDom) return;
+    const displayName = userName ? `${userName} (Host)` : "VS Code Host";
 
-      editor.deltaDecorations(
-        [],
-        [
-          {
-            range: new monacoRef.current.Range(line, column, line, column),
-            options: { className: "remote-cursor" },
-          },
-        ],
+    if (nameTagWidget.current) {
+      nameTagWidget.current.remove();
+      nameTagWidget.current = null;
+    }
+
+    const editorDom = editor.getDomNode();
+    if (!editorDom) return;
+
+    // FIX: Use decorationRef so it deletes the old ghost cursor before drawing the new one
+    decorationRef.current = editor.deltaDecorations(decorationRef.current, [
+      {
+        range: new monacoRef.current.Range(line, column, line, column),
+        options: { className: "remote-cursor" },
+      },
+    ]);
+
+    const tag = document.createElement("div");
+    tag.className = "remote-name-tag";
+    tag.innerText = displayName;
+    Object.assign(tag.style, {
+      position: "absolute",
+      background: "#d97706",
+      color: "white",
+      padding: "2px 6px",
+      fontSize: "10px",
+      borderRadius: "4px",
+      pointerEvents: "none",
+      zIndex: "100",
+      whiteSpace: "nowrap",
+    });
+
+    editorDom.style.position = "relative";
+    editorDom.appendChild(tag);
+    nameTagWidget.current = tag;
+
+    try {
+      const layoutInfo = editor.getLayoutInfo();
+      const scrollTop = editor.getScrollTop();
+      const scrollLeft = editor.getScrollLeft();
+      const lineHeight = editor.getOption(
+        (monacoRef.current as Monaco).editor.EditorOption.lineHeight,
       );
-
-      const tag = document.createElement("div");
-      tag.className = "remote-name-tag";
-      tag.innerText = displayName;
-      Object.assign(tag.style, {
-        position: "absolute",
-        background: "#d97706",
-        color: "white",
-        padding: "2px 6px",
-        fontSize: "10px",
-        borderRadius: "4px",
-        pointerEvents: "none",
-        zIndex: "100",
-        whiteSpace: "nowrap",
-      });
-
-      editorDom.style.position = "relative";
-      editorDom.appendChild(tag);
-      nameTagWidget.current = tag;
-
-      try {
-        const layoutInfo = editor.getLayoutInfo();
-        const scrollTop = editor.getScrollTop();
-        const scrollLeft = editor.getScrollLeft();
-        const lineHeight = editor.getOption(
-          (monacoRef.current as Monaco).editor.EditorOption.lineHeight,
-        );
-        const charWidth = 7.2;
-        const top = (line - 1) * lineHeight - scrollTop - 20;
-        const left =
-          layoutInfo.contentLeft + (column - 1) * charWidth - scrollLeft;
-        tag.style.top = `${Math.max(0, top)}px`;
-        tag.style.left = `${Math.max(0, left)}px`;
-      } catch {
-        tag.style.top = "4px";
-        tag.style.left = "4px";
-      }
-    },
-    [],
-  );
+      const charWidth = 7.2;
+      const top = (line - 1) * lineHeight - scrollTop - 20;
+      const left =
+        layoutInfo.contentLeft + (column - 1) * charWidth - scrollLeft;
+      tag.style.top = `${Math.max(0, top)}px`;
+      tag.style.left = `${Math.max(0, left)}px`;
+    } catch {
+      tag.style.top = "4px";
+      tag.style.left = "4px";
+    }
+  },
+  [],
+);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -438,11 +456,14 @@ export default function App() {
       setRawFileTree(payload.payload.files || []);
     });
 
-    room.on("broadcast", { event: "cursor-update" }, (payload) => {
-      const { line, column, userName } = payload.payload;
-      lastHostCursorRef.current = { line, column, userName };
-      renderHostCursor(line, column, userName);
-    });
+ room.on("broadcast", { event: "cursor-update" }, (payload) => {
+   // Catch the fileName that VS Code is now sending
+   const { line, column, userName, fileName } = payload.payload;
+
+   // Update memory and render
+   lastHostCursorRef.current = { line, column, userName, fileName };
+   renderHostCursor(line, column, userName, fileName);
+ });
 
     // Receive terminal output from VS Code and write to xterm
     room.on("broadcast", { event: "terminal-output" }, (payload) => {

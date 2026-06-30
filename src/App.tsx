@@ -167,11 +167,8 @@ export default function App() {
     fileName?: string;
   } | null>(null);
   const webUserNameRef = useRef<string>("Web User");
-  const codeUpdateTimeoutRef = useRef<number | null>(null);
-  const cursorThrottleRef = useRef<number>(0);
-  // Delta-sync: guards against re-broadcasting changes we just applied
-  // from a remote delta (prevents echo loops), and a periodic full-doc
-  // reconciliation timer as a correctness safety net.
+  // const codeUpdateTimeoutRef = useRef<number | null>(null);
+  // const cursorThrottleRef = useRef<number>(0);
   const isApplyingRemoteDelta = useRef<boolean>(false);
   const reconcileIntervalRef = useRef<number | null>(null);
 

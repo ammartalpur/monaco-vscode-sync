@@ -197,11 +197,22 @@ export default function App() {
     }
     webUserNameRef.current = savedName;
   }, []);
+useEffect(() => {
+  console.log(
+    "Terminal State Changed. Open:",
+    isTerminalOpen,
+    "Terminal Ref:",
+    !!terminalRef.current,
+  );
 
-  useEffect(() => {
-    if (!isTerminalOpen || !terminalRef.current) return;
-    if (xtermRef.current) return;
+  if (!isTerminalOpen || !terminalRef.current) return;
+  if (xtermRef.current) {
+    console.log("Terminal already exists, skipping initialization.");
+    return;
+  }
 
+  try {
+    console.log("Initializing xterm.js...");
     const term = new Terminal({
       theme: {
         background: "#1a1a1a",
@@ -228,75 +239,14 @@ export default function App() {
     fitAddon.fit();
     xtermRef.current = term;
 
-    term.writeln("\x1b[33m┌─────────────────────────────────┐\x1b[0m");
-    term.writeln("\x1b[33m│   Tameer Terminal  ⚡           │\x1b[0m");
-    term.writeln("\x1b[33m└─────────────────────────────────┘\x1b[0m");
-    term.writeln(
-      "\x1b[90mType a command and press Enter to run it on VS Code.\x1b[0m",
-    );
+    term.writeln("\x1b[33mTerminal Initialized...\x1b[0m");
     printPrompt();
 
-    term.onKey(({ key, domEvent }) => {
-      const channel = channelRef.current;
-      if (domEvent.key === "Enter") {
-        const cmd = inputBufferRef.current.trim();
-        term.write("\r\n");
-        if (cmd && channel) {
-          if (!isProcessRunningRef.current) {
-            setProcessRunning(true);
-            channel.send({
-              type: "broadcast",
-              event: "run-command",
-              payload: { command: cmd },
-            });
-          } else {
-            // FIX: Restore the ability to send interactive input while a process is running!
-            channel.send({
-              type: "broadcast",
-              event: "terminal-input",
-              payload: { input: cmd + "\n" },
-            });
-          }
-        } else if (!cmd && !isProcessRunningRef.current) {
-          printPrompt();
-        }
-        inputBufferRef.current = "";
-        return;
-      }
-
-      if (domEvent.ctrlKey && domEvent.key === "c") {
-        if (channel && isProcessRunningRef.current) {
-          channel.send({
-            type: "broadcast",
-            event: "kill-process",
-            payload: {},
-          });
-        } else {
-          term.write("^C");
-          printPrompt();
-        }
-        inputBufferRef.current = "";
-        return;
-      }
-
-      if (domEvent.key === "Backspace") {
-        if (inputBufferRef.current.length > 0) {
-          inputBufferRef.current = inputBufferRef.current.slice(0, -1);
-          term.write("\b \b");
-        }
-        return;
-      }
-
-      if (key && !domEvent.ctrlKey && !domEvent.altKey && !domEvent.metaKey) {
-        inputBufferRef.current += key;
-        term.write(key);
-      }
-    });
-
-    const observer = new ResizeObserver(() => fitAddon.fit());
-    observer.observe(terminalRef.current);
-    return () => observer.disconnect();
-  }, [isTerminalOpen, printPrompt]);
+    console.log("Terminal successfully opened.");
+  } catch (err) {
+    console.error("FAILED TO INITIALIZE TERMINAL:", err);
+  }
+}, [isTerminalOpen, printPrompt]);
 
   const renderHostCursor = useCallback(
     (
